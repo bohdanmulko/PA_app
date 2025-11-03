@@ -1,7 +1,8 @@
-# app_streamlit_hr_genero_hire.py
+# app_streamlit_hr_genero_hire_tabs.py
 # Streamlit: Compañía / Departamento / Individual,
-# con comparativa por género y por fecha de contratación (DateofHire)
-# Ejecuta: streamlit run app_streamlit_hr_genero_hire.py
+# con comparativa por género, fecha de contratación
+# y pestañas específicas para hombres / mujeres.
+# Ejecuta: streamlit run app_streamlit_hr_genero_hire_tabs.py
 
 from typing import Optional, Dict, Any
 import pandas as pd
@@ -193,7 +194,7 @@ def apply_levers(subset: pd.DataFrame) -> pd.DataFrame:
     return out
 
 # =========================
-# CONSTRUCCIÓN DEL INFORME HTML
+# CONSTRUCCIÓN DEL INFORME HTML (departamento)
 # =========================
 def build_report_html(
     dept_name: str,
@@ -282,9 +283,11 @@ else:
     st.caption("Se ha añadido comparativa por **fecha de contratación** usando la columna `DateofHire`.")
 
 # =========================
-# TABS
+# TABS PRINCIPALES
 # =========================
-tab_company, tab_dept, tab_individual = st.tabs(["🏢 Compañía", "🏬 Departamento", "👤 Individual"])
+tab_company, tab_dept, tab_individual, tab_male, tab_female, tab_gendercmp = st.tabs(
+    ["🏢 Compañía", "🏬 Departamento", "👤 Individual", "👨 Hombres", "👩 Mujeres", "⚖️ Comparativa H vs M"]
+)
 
 # =========================
 # COMPAÑÍA
@@ -479,14 +482,14 @@ with tab_dept:
 
         # ---------- Distribución ----------
         dist_base = target_view["_level_base"].value_counts().sort_index()
-        dist_table = pd.DataFrame({
+        dist_table_dept = pd.DataFrame({
             "Nivel": dist_base.index,
             "Personas": dist_base.values,
             "Porcentaje": (dist_base.values / max(1, len(target_view)) * 100).round(1)
         })
 
         fig_dist = px.bar(
-            dist_table, x="Nivel", y="Personas", text="Personas",
+            dist_table_dept, x="Nivel", y="Personas", text="Personas",
             title=f"Distribución de niveles — Baseline (predicho) — {dept_sel} (filtro aplicado)",
             labels={"Nivel": "Nivel (redondeado)", "Personas": "Cantidad"},
         )
@@ -664,7 +667,7 @@ with tab_dept:
 
         html_str = build_report_html(
             dept_sel,
-            dist_table,
+            dist_table_dept,
             fig_dist_for_html,
             comp_tbl_for_html,
             fig_comp_for_html,
@@ -812,11 +815,267 @@ with tab_individual:
             st.dataframe(comp, use_container_width=True)
 
 # =========================
+# NUEVA PESTAÑA: HOMBRES
+# =========================
+with tab_male:
+    st.header("👨 Análisis específico — Hombres")
+
+    if gender_col is None:
+        st.info("No se encontró ninguna columna de género. No se puede filtrar hombres/mujeres.")
+    else:
+        gender_values = df[gender_col].dropna().astype(str)
+        tags_male = {"m", "male", "hombre", "masculino"}
+        male_vals = [g for g in gender_values.unique() if g.strip().lower() in tags_male]
+
+        if not male_vals:
+            st.info("No se han encontrado valores típicos de 'hombre' (M, Male, Hombre, Masculino) en la columna de género.")
+        else:
+            df_m = df[df[gender_col].astype(str).isin(male_vals)].copy()
+            if df_m.empty:
+                st.info("No hay registros de hombres según los valores detectados en la columna de género.")
+            else:
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Personas (H)", len(df_m))
+                c2.metric("PerfScoreID medio (predicho)", f"{df_m['_pred_base'].mean():.3f}")
+                c3.metric("Nivel más frecuente (H)", int(df_m["_level_base"].mode().iloc[0]))
+
+                st.markdown("##### Distribución de niveles (Hombres)")
+                mask_m = df_m["_level_base"].isin(COMPANY_LEVELS_TO_SHOW)
+                dist_m = df_m.loc[mask_m, "_level_base"].value_counts().reindex(COMPANY_LEVELS_TO_SHOW, fill_value=0)
+                dist_m_tbl = pd.DataFrame({"Nivel": dist_m.index, "Personas": dist_m.values})
+                dist_m_tbl["%"] = (dist_m_tbl["Personas"] / max(1, dist_m_tbl["Personas"].sum()) * 100).round(1)
+                fig_m = px.bar(
+                    dist_m_tbl, x="Nivel", y="Personas", text="Personas",
+                    title="Distribución de niveles — Hombres",
+                    labels={"Nivel": "Nivel", "Personas": "Cantidad"},
+                    color_discrete_sequence=DEFAULT_SEQ,
+                )
+                fig_m.update_traces(textposition="outside")
+                style_fig(fig_m)
+                st.plotly_chart(fig_m, use_container_width=True)
+                st.dataframe(dist_m_tbl, use_container_width=True)
+
+                st.markdown("##### Niveles medios por departamento (Hombres)")
+                dept_mean_m = (
+                    df_m.groupby("Department")["_pred_base"]
+                    .mean()
+                    .reset_index()
+                    .rename(columns={"_pred_base": "PerfScore_pred_medio"})
+                )
+                dept_mean_m["PerfScore_pred_medio"] = dept_mean_m["PerfScore_pred_medio"].round(3)
+                fig_dept_m = px.bar(
+                    dept_mean_m,
+                    x="Department",
+                    y="PerfScore_pred_medio",
+                    title="PerfScoreID medio (predicho) por departamento — Hombres",
+                    labels={"Department": "Departamento", "PerfScore_pred_medio": "PerfScoreID medio"},
+                )
+                fig_dept_m.update_layout(xaxis_tickangle=-45)
+                style_fig(fig_dept_m)
+                st.plotly_chart(fig_dept_m, use_container_width=True)
+                st.dataframe(dept_mean_m, use_container_width=True)
+
+                st.markdown("##### Distribución por año de contratación (Hombres)")
+                if HIRE_COL is None or df_m["HireYear"].notna().sum() == 0:
+                    st.info("No hay información suficiente de fecha de contratación para hombres.")
+                else:
+                    df_m_hire = df_m[df_m["HireYear"].notna() & df_m["_level_base"].isin(COMPANY_LEVELS_TO_SHOW)].copy()
+                    dist_m_hire = (
+                        df_m_hire
+                        .groupby(["HireYear", "_level_base"])
+                        .size()
+                        .reset_index(name="Personas")
+                    )
+                    total_m_hire = dist_m_hire.groupby("HireYear")["Personas"].transform("sum")
+                    dist_m_hire["% dentro del año"] = (dist_m_hire["Personas"] / total_m_hire * 100).round(1)
+
+                    fig_m_hire = px.bar(
+                        dist_m_hire,
+                        x="HireYear",
+                        y="Personas",
+                        color="_level_base",
+                        barmode="stack",
+                        title="Niveles por año de contratación — Hombres",
+                        labels={
+                            "HireYear": "Año de contratación",
+                            "_level_base": "Nivel (redondeado)",
+                            "Personas": "Cantidad",
+                        },
+                        color_discrete_sequence=DEFAULT_SEQ,
+                    )
+                    style_fig(fig_m_hire)
+                    st.plotly_chart(fig_m_hire, use_container_width=True)
+                    st.dataframe(dist_m_hire.sort_values(["HireYear", "_level_base"]), use_container_width=True)
+
+# =========================
+# NUEVA PESTAÑA: MUJERES
+# =========================
+with tab_female:
+    st.header("👩 Análisis específico — Mujeres")
+
+    if gender_col is None:
+        st.info("No se encontró ninguna columna de género. No se puede filtrar hombres/mujeres.")
+    else:
+        gender_values = df[gender_col].dropna().astype(str)
+        tags_female = {"f", "female", "mujer", "femenino", "fem"}
+        female_vals = [g for g in gender_values.unique() if g.strip().lower() in tags_female]
+
+        if not female_vals:
+            st.info("No se han encontrado valores típicos de 'mujer' (F, Female, Mujer, Femenino) en la columna de género.")
+        else:
+            df_f = df[df[gender_col].astype(str).isin(female_vals)].copy()
+            if df_f.empty:
+                st.info("No hay registros de mujeres según los valores detectados en la columna de género.")
+            else:
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Personas (M)", len(df_f))
+                c2.metric("PerfScoreID medio (predicho)", f"{df_f['_pred_base'].mean():.3f}")
+                c3.metric("Nivel más frecuente (M)", int(df_f["_level_base"].mode().iloc[0]))
+
+                st.markdown("##### Distribución de niveles (Mujeres)")
+                mask_f = df_f["_level_base"].isin(COMPANY_LEVELS_TO_SHOW)
+                dist_f = df_f.loc[mask_f, "_level_base"].value_counts().reindex(COMPANY_LEVELS_TO_SHOW, fill_value=0)
+                dist_f_tbl = pd.DataFrame({"Nivel": dist_f.index, "Personas": dist_f.values})
+                dist_f_tbl["%"] = (dist_f_tbl["Personas"] / max(1, dist_f_tbl["Personas"].sum()) * 100).round(1)
+                fig_f = px.bar(
+                    dist_f_tbl, x="Nivel", y="Personas", text="Personas",
+                    title="Distribución de niveles — Mujeres",
+                    labels={"Nivel": "Nivel", "Personas": "Cantidad"},
+                    color_discrete_sequence=DEFAULT_SEQ,
+                )
+                fig_f.update_traces(textposition="outside")
+                style_fig(fig_f)
+                st.plotly_chart(fig_f, use_container_width=True)
+                st.dataframe(dist_f_tbl, use_container_width=True)
+
+                st.markdown("##### Niveles medios por departamento (Mujeres)")
+                dept_mean_f = (
+                    df_f.groupby("Department")["_pred_base"]
+                    .mean()
+                    .reset_index()
+                    .rename(columns={"_pred_base": "PerfScore_pred_medio"})
+                )
+                dept_mean_f["PerfScore_pred_medio"] = dept_mean_f["PerfScore_pred_medio"].round(3)
+                fig_dept_f = px.bar(
+                    dept_mean_f,
+                    x="Department",
+                    y="PerfScore_pred_medio",
+                    title="PerfScoreID medio (predicho) por departamento — Mujeres",
+                    labels={"Department": "Departamento", "PerfScore_pred_medio": "PerfScoreID medio"},
+                )
+                fig_dept_f.update_layout(xaxis_tickangle=-45)
+                style_fig(fig_dept_f)
+                st.plotly_chart(fig_dept_f, use_container_width=True)
+                st.dataframe(dept_mean_f, use_container_width=True)
+
+                st.markdown("##### Distribución por año de contratación (Mujeres)")
+                if HIRE_COL is None or df_f["HireYear"].notna().sum() == 0:
+                    st.info("No hay información suficiente de fecha de contratación para mujeres.")
+                else:
+                    df_f_hire = df_f[df_f["HireYear"].notna() & df_f["_level_base"].isin(COMPANY_LEVELS_TO_SHOW)].copy()
+                    dist_f_hire = (
+                        df_f_hire
+                        .groupby(["HireYear", "_level_base"])
+                        .size()
+                        .reset_index(name="Personas")
+                    )
+                    total_f_hire = dist_f_hire.groupby("HireYear")["Personas"].transform("sum")
+                    dist_f_hire["% dentro del año"] = (dist_f_hire["Personas"] / total_f_hire * 100).round(1)
+
+                    fig_f_hire = px.bar(
+                        dist_f_hire,
+                        x="HireYear",
+                        y="Personas",
+                        color="_level_base",
+                        barmode="stack",
+                        title="Niveles por año de contratación — Mujeres",
+                        labels={
+                            "HireYear": "Año de contratación",
+                            "_level_base": "Nivel (redondeado)",
+                            "Personas": "Cantidad",
+                        },
+                        color_discrete_sequence=DEFAULT_SEQ,
+                    )
+                    style_fig(fig_f_hire)
+                    st.plotly_chart(fig_f_hire, use_container_width=True)
+                    st.dataframe(dist_f_hire.sort_values(["HireYear", "_level_base"]), use_container_width=True)
+
+# =========================
+# NUEVA PESTAÑA: COMPARATIVA H vs M
+# =========================
+with tab_gendercmp:
+    st.header("⚖️ Comparativa Hombres vs Mujeres (KPIs y medias)")
+
+    if gender_col is None:
+        st.info("No se encontró ninguna columna de género. No se puede hacer comparativa H vs M.")
+    else:
+        gender_values = df[gender_col].dropna().astype(str)
+        tags_male = {"m", "male", "hombre", "masculino"}
+        tags_female = {"f", "female", "mujer", "femenino", "fem"}
+
+        male_vals = [g for g in gender_values.unique() if g.strip().lower() in tags_male]
+        female_vals = [g for g in gender_values.unique() if g.strip().lower() in tags_female]
+
+        if not male_vals or not female_vals:
+            st.info("No se han identificado correctamente valores para hombres y mujeres en la columna de género.")
+        else:
+            df_m = df[df[gender_col].astype(str).isin(male_vals)].copy()
+            df_f = df[df[gender_col].astype(str).isin(female_vals)].copy()
+
+            if df_m.empty or df_f.empty:
+                st.info("No hay suficientes registros en alguno de los grupos (H o M) para comparar.")
+            else:
+                col1, col2, col3 = st.columns(3)
+                col1.metric("Personas H", len(df_m))
+                col2.metric("Personas M", len(df_f))
+                col3.metric("Total", len(df_m) + len(df_f))
+
+                # KPIs de nivel y PerfScore
+                colA, colB = st.columns(2)
+                colA.metric("PerfScoreID medio H (predicho)", f"{df_m['_pred_base'].mean():.3f}")
+                colB.metric("PerfScoreID medio M (predicho)", f"{df_f['_pred_base'].mean():.3f}")
+
+                colC, colD = st.columns(2)
+                colC.metric("Nivel más frecuente H", int(df_m["_level_base"].mode().iloc[0]))
+                colD.metric("Nivel más frecuente M", int(df_f["_level_base"].mode().iloc[0]))
+
+                st.markdown("##### Medias de variables clave por género")
+                vars_summary = FEATURES + ["_pred_base"]
+                rename_vars = {v: v for v in vars_summary}
+                rename_vars["_pred_base"] = "PerfScore_pred"
+
+                summary = (
+                    df[df[gender_col].astype(str).isin(male_vals + female_vals)]
+                    .groupby(gender_col)[vars_summary]
+                    .mean()
+                    .reset_index()
+                    .rename(columns=rename_vars)
+                )
+                summary = summary.round(3)
+                st.dataframe(summary, use_container_width=True)
+
+                st.markdown("##### Visualización: medias por variable y género")
+                summary_melt = summary.melt(id_vars=gender_col, var_name="Variable", value_name="Media")
+                fig_summary = px.bar(
+                    summary_melt,
+                    x="Variable",
+                    y="Media",
+                    color=gender_col,
+                    barmode="group",
+                    title="Medias por género (variables clave)",
+                    color_discrete_sequence=DEFAULT_SEQ,
+                )
+                fig_summary.update_layout(xaxis_tickangle=-45)
+                style_fig(fig_summary)
+                st.plotly_chart(fig_summary, use_container_width=True)
+
+# =========================
 # NOTAS FINALES
 # =========================
 st.caption(
     "• El tablero usa SOLO predicción del modelo (árbol sencillo) sobre EmpSatisfaction, EngagementSurvey, Salary, "
     "SpecialProjectsCount, Absences y DaysLateLast30. "
-    "• Se han añadido comparativas por género (usando la columna 'Sex') y por año de contratación (DateofHire), "
-    "además de un contexto de antigüedad aproximada (TenureYears)."
+    "• Se han añadido comparativas por género y por año de contratación (DateofHire), "
+    "además de pestañas específicas para Hombres y Mujeres y una comparativa global H vs M."
 )
+
