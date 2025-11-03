@@ -1,9 +1,7 @@
-# app_streamlit_hr_levels.py
-# Streamlit: Compañía / Departamento / Individual, estética compacta,
-# palancas del menú ±100% (multiplicativas), árbol depth=5, filtros en Departamento,
-# notas por departamento e informe HTML con gráficos en tema claro.
-# Ejecuta: streamlit run app_streamlit_hr_levels.py
-# Requisitos: streamlit pandas scikit-learn plotly
+# app_streamlit_hr_genero_hire.py
+# Streamlit: Compañía / Departamento / Individual,
+# con comparativa por género y por fecha de contratación (DateofHire)
+# Ejecuta: streamlit run app_streamlit_hr_genero_hire.py
 
 from typing import Optional, Dict, Any
 import pandas as pd
@@ -14,7 +12,7 @@ import plotly.io as pio
 from sklearn.tree import DecisionTreeRegressor
 from datetime import datetime
 
-st.set_page_config(page_title="HR — Niveles y What-If", layout="wide")
+st.set_page_config(page_title="HR — Niveles, Género y Fecha de contratación", layout="wide")
 
 # =========================
 # CONFIGURACIÓN
@@ -33,7 +31,7 @@ LEVEL_MIN, LEVEL_MAX = 1, 5
 COMPANY_LEVELS_TO_SHOW = [1, 2, 3, 4]
 
 # =========================
-# TEMA PLOTLY (evitar gráficos negros en HTML)
+# TEMA PLOTLY
 # =========================
 pio.templates.default = "plotly_white"
 DEFAULT_SEQ = px.colors.qualitative.Set2
@@ -76,11 +74,41 @@ if "Department" not in df.columns:
     st.error("El CSV no tiene la columna 'Department'.")
     st.stop()
 
+# ---- Género (usa el dataset real) ----
+GENDER_CANDIDATES = ["Sex", "Gender", "GenderID"]
+gender_col: Optional[str] = None
+for c in GENDER_CANDIDATES:
+    if c in df.columns:
+        gender_col = c
+        break
+
+# ---- Fecha de contratación (DateofHire) ----
+HIRE_COL = "DateofHire" if "DateofHire" in df.columns else None
+
+if HIRE_COL is not None:
+    df["DateofHire_dt"] = pd.to_datetime(df[HIRE_COL], errors="coerce")
+    df["HireYear"] = df["DateofHire_dt"].dt.year
+
+    if "LastPerformanceReview_Date" in df.columns:
+        ref_date = pd.to_datetime(df["LastPerformanceReview_Date"], errors="coerce").max()
+    else:
+        ref_date = df["DateofHire_dt"].max()
+
+    df["TenureYears"] = ((ref_date - df["DateofHire_dt"]).dt.days / 365.25).clip(lower=0)
+else:
+    df["DateofHire_dt"] = pd.NaT
+    df["HireYear"] = np.nan
+    df["TenureYears"] = np.nan
+
 # =========================
-# MODELO (más sensible: profundidad 5)
+# MODELO (árbol sencillo)
 # =========================
 X = df[FEATURES].copy()
-y = df[TARGET].astype(float) if TARGET in df.columns else np.full(len(df), X[FEATURES[0]].mean())
+if TARGET in df.columns:
+    y = df[TARGET].astype(float)
+else:
+    y = np.full(len(df), X[FEATURES[0]].mean())
+
 tree = DecisionTreeRegressor(max_depth=5, min_samples_leaf=2, random_state=42)
 tree.fit(X, y)
 
@@ -88,11 +116,11 @@ def to_level(pred: np.ndarray) -> np.ndarray:
     arr = np.rint(pred).astype(int)
     return np.clip(arr, LEVEL_MIN, LEVEL_MAX)
 
-# Baseline (predicho) global
+# Baseline global
 df["_pred_base"] = tree.predict(df[FEATURES])
 df["_level_base"] = to_level(df["_pred_base"])
 
-# Identificadores
+# Identificador principal
 id_cols = [c for c in ["EmpID", "Employee_Name"] if c in df.columns]
 id_col = id_cols[0] if id_cols else None
 if id_col is None:
@@ -103,7 +131,6 @@ if id_col is None:
 # ESTADO — NOTAS POR DEPARTAMENTO
 # =========================
 if "dept_notes" not in st.session_state:
-    # Estructura: { dept: {"ideas": str, "sugerencias": str, "last_saved": datetime_str} }
     st.session_state.dept_notes: Dict[str, Dict[str, Any]] = {}
 
 def get_dept_notes(dept: str) -> Dict[str, str]:
@@ -117,9 +144,9 @@ def set_dept_notes(dept: str, ideas: str, sugerencias: str) -> None:
     }
 
 # =========================
-# PALANCAS DEL MENÚ (±100% relativo)
+# PALANCAS GLOBALES (±100% relativo)
 # =========================
-st.sidebar.header("Palancas (±100% relativo)")
+st.sidebar.header("Palancas globales (±100% relativo)")
 st.sidebar.caption("Se aplican como cambios porcentuales sobre los valores actuales del departamento/individuo.")
 
 delta_satisfaction_pct = st.sidebar.slider("EmpSatisfaction (%)",      -100, 100, 0, 1, format="%d%%")
@@ -157,10 +184,6 @@ def apply_levers(subset: pd.DataFrame) -> pd.DataFrame:
     late = late.clip(lower=0)
     sal  = sal.clip(lower=0)
 
-    # (Opcional) limitar escalas a 5.0 si aplica:
-    # es = es.clip(upper=5.0)
-    # en = en.clip(upper=5.0)
-
     out["EmpSatisfaction"]      = es
     out["EngagementSurvey"]     = en
     out["SpecialProjectsCount"] = spc
@@ -170,7 +193,7 @@ def apply_levers(subset: pd.DataFrame) -> pd.DataFrame:
     return out
 
 # =========================
-# CONSTRUCCIÓN DEL INFORME HTML (fuera de los tabs)
+# CONSTRUCCIÓN DEL INFORME HTML
 # =========================
 def build_report_html(
     dept_name: str,
@@ -226,7 +249,6 @@ def build_report_html(
         </div>
         """
 
-    # Textos ya preprocesados con <br> fuera de este f-string
     ideas_block = ideas_html if ideas_html.strip() else "<i>(sin notas)</i>"
     sugerencias_block = sugerencias_html if sugerencias_html.strip() else "<i>(sin notas)</i>"
 
@@ -246,8 +268,18 @@ def build_report_html(
 # =========================
 # CABECERA
 # =========================
-st.title("📊 HR — Niveles por Compañía, Departamento e Individual (solo predicho)")
-st.caption("Todo lo mostrado son **predicciones del modelo**; los niveles se calculan redondeando el PerfScoreID predicho y acotando a [1, 5].")
+st.title("📊 HR — Niveles por Compañía, Departamento e Individual")
+st.caption("Todo lo mostrado son predicciones del modelo; los niveles se calculan redondeando el PerfScoreID predicho y acotando a [1, 5].")
+
+if gender_col is None:
+    st.caption("⚠️ No se ha encontrado ninguna columna de género estándar (por ejemplo, 'Sex', 'Gender').")
+else:
+    st.caption(f"Columna de género usada: **{gender_col}**")
+
+if HIRE_COL is None:
+    st.caption("⚠️ No se ha encontrado la columna 'DateofHire'.")
+else:
+    st.caption("Se ha añadido comparativa por **fecha de contratación** usando la columna `DateofHire`.")
 
 # =========================
 # TABS
@@ -296,6 +328,94 @@ with tab_company:
 
     st.dataframe(table, use_container_width=True)
 
+    # --------- COMPARATIVA GLOBAL POR GÉNERO ---------
+    st.markdown("---")
+    st.subheader("👥 Comparativa de niveles por género (global compañía)")
+
+    if gender_col is None:
+        st.info("No se encontró ninguna columna de género para comparar.")
+    else:
+        df_gender = df[df[gender_col].notna()].copy()
+        if df_gender.empty:
+            st.info("No hay datos de género disponibles para comparar.")
+        else:
+            df_gender_levels = df_gender[df_gender["_level_base"].isin(COMPANY_LEVELS_TO_SHOW)].copy()
+            dist_gender = (
+                df_gender_levels
+                .groupby([gender_col, "_level_base"])
+                .size()
+                .reset_index(name="Personas")
+            )
+            total_by_gender = dist_gender.groupby(gender_col)["Personas"].transform("sum")
+            dist_gender["% dentro de género"] = (dist_gender["Personas"] / total_by_gender * 100).round(1)
+
+            fig_g = px.bar(
+                dist_gender,
+                x="_level_base",
+                y="Personas",
+                color=gender_col,
+                barmode="group",
+                title="Distribución de niveles (1–4) por género — predicho",
+                labels={
+                    "_level_base": "Nivel (redondeado)",
+                    "Personas": "Cantidad",
+                    gender_col: "Género",
+                },
+                color_discrete_sequence=DEFAULT_SEQ,
+            )
+            fig_g.update_traces(textposition="outside")
+            style_fig(fig_g)
+            st.plotly_chart(fig_g, use_container_width=True)
+
+            st.dataframe(dist_gender, use_container_width=True)
+
+            st.markdown("##### KPIs por género (global)")
+            kpi_gender = (
+                df_gender
+                .groupby(gender_col)["_pred_base"]
+                .agg(Media_Predicho="mean", Conteo="count")
+                .reset_index()
+            )
+            kpi_gender["Media_Predicho"] = kpi_gender["Media_Predicho"].round(3)
+            st.dataframe(kpi_gender, use_container_width=True)
+
+    # --------- COMPARATIVA GLOBAL POR AÑO DE CONTRATACIÓN ---------
+    st.markdown("---")
+    st.subheader("📅 Comparativa de niveles por año de contratación (DateofHire)")
+
+    if HIRE_COL is None or df["HireYear"].notna().sum() == 0:
+        st.info("No hay información de fecha de contratación suficiente para esta comparativa.")
+    else:
+        df_hire = df[df["HireYear"].notna() & df["_level_base"].isin(COMPANY_LEVELS_TO_SHOW)].copy()
+
+        dist_hire = (
+            df_hire
+            .groupby(["HireYear", "_level_base"])
+            .size()
+            .reset_index(name="Personas")
+        )
+        total_by_year = dist_hire.groupby("HireYear")["Personas"].transform("sum")
+        dist_hire["% dentro del año"] = (dist_hire["Personas"] / total_by_year * 100).round(1)
+
+        fig_h = px.bar(
+            dist_hire,
+            x="HireYear",
+            y="Personas",
+            color="_level_base",
+            barmode="stack",
+            title="Distribución de niveles (1–4) por año de contratación",
+            labels={
+                "HireYear": "Año de contratación",
+                "_level_base": "Nivel (redondeado)",
+                "Personas": "Cantidad",
+            },
+            color_discrete_sequence=DEFAULT_SEQ,
+        )
+        style_fig(fig_h)
+        st.plotly_chart(fig_h, use_container_width=True)
+
+        st.dataframe(dist_hire.sort_values(["HireYear", "_level_base"]), use_container_width=True)
+
 # =========================
 # DEPARTAMENTO (con filtros)
 # =========================
@@ -315,7 +435,12 @@ with tab_dept:
 
         # ---------- Filtros internos ----------
         st.markdown("#### Filtros del departamento")
-        col_f1, col_f2, col_f3 = st.columns([1, 1, 1])
+        if gender_col is not None:
+            col_f1, col_f2, col_f3, col_f4 = st.columns([1, 1, 1, 1])
+        else:
+            col_f1, col_f2, col_f3 = st.columns([1, 1, 1])
+            col_f4 = None
+
         levels_pick = col_f1.multiselect("Nivel (baseline predicho)", [1, 2, 3, 4, 5], default=[1, 2, 3, 4, 5], key="dept_levels")
         min_pred, max_pred = float(df_dept["_pred_base"].min()), float(df_dept["_pred_base"].max())
         pred_range = col_f2.slider(
@@ -325,10 +450,23 @@ with tab_dept:
         )
         search_txt = col_f3.text_input(f"Buscar por {id_col}", value="", key="dept_search").strip().lower()
 
+        genders_pick = None
+        if gender_col is not None and col_f4 is not None:
+            gender_opts_dept = sorted(df_dept[gender_col].dropna().astype(str).unique())
+            if gender_opts_dept:
+                genders_pick = col_f4.multiselect(
+                    "Género (opcional)",
+                    options=gender_opts_dept,
+                    default=gender_opts_dept,
+                    key=f"dept_gender_{dept_sel}"
+                )
+
         mask_dept = df_dept["_level_base"].isin(levels_pick)
         mask_dept &= (df_dept["_pred_base"].between(pred_range[0], pred_range[1], inclusive="both"))
         if search_txt:
             mask_dept &= df_dept[id_col].astype(str).str.lower().str.contains(search_txt, na=False)
+        if gender_col is not None and genders_pick:
+            mask_dept &= df_dept[gender_col].astype(str).isin(genders_pick)
 
         df_dept_filtrado = df_dept[mask_dept].copy()
         target_view = df_dept_filtrado if not df_dept_filtrado.empty else df_dept
@@ -363,6 +501,78 @@ with tab_dept:
             use_container_width=True
         )
 
+        # ---------- Comparativa por género dentro del departamento ----------
+        st.markdown("##### Comparativa de niveles por género en el departamento")
+        if gender_col is None:
+            st.info("No se encontró columna de género en el dataset, no se puede mostrar la comparativa por género.")
+        else:
+            df_dept_gender = target_view[target_view[gender_col].notna()].copy()
+            if df_dept_gender.empty:
+                st.info("No hay datos de género en el subconjunto seleccionado.")
+            else:
+                dist_dept_gender = (
+                    df_dept_gender
+                    .groupby([gender_col, "_level_base"])
+                    .size()
+                    .reset_index(name="Personas")
+                )
+                total_by_gender_dept = dist_dept_gender.groupby(gender_col)["Personas"].transform("sum")
+                dist_dept_gender["% dentro de género"] = (dist_dept_gender["Personas"] / total_by_gender_dept * 100).round(1)
+
+                fig_dept_gender = px.bar(
+                    dist_dept_gender,
+                    x="_level_base",
+                    y="Personas",
+                    color=gender_col,
+                    barmode="group",
+                    title=f"Distribución de niveles por género — {dept_sel}",
+                    labels={
+                        "_level_base": "Nivel (redondeado)",
+                        "Personas": "Cantidad",
+                        gender_col: "Género",
+                    },
+                    color_discrete_sequence=DEFAULT_SEQ,
+                )
+                fig_dept_gender.update_traces(textposition="outside")
+                style_fig(fig_dept_gender)
+                st.plotly_chart(fig_dept_gender, use_container_width=True)
+
+                st.dataframe(dist_dept_gender, use_container_width=True)
+
+        # ---------- Comparativa por año de contratación en el departamento ----------
+        st.markdown("##### Comparativa de niveles por año de contratación en el departamento")
+        if HIRE_COL is None or target_view["HireYear"].notna().sum() == 0:
+            st.info("No hay información de fecha de contratación suficiente en este departamento.")
+        else:
+            df_dept_hire = target_view[target_view["HireYear"].notna()].copy()
+            dist_dept_hire = (
+                df_dept_hire
+                .groupby(["HireYear", "_level_base"])
+                .size()
+                .reset_index(name="Personas")
+            )
+            total_by_year_dept = dist_dept_hire.groupby("HireYear")["Personas"].transform("sum")
+            dist_dept_hire["% dentro del año"] = (dist_dept_hire["Personas"] / total_by_year_dept * 100).round(1)
+
+            fig_dept_hire = px.bar(
+                dist_dept_hire,
+                x="HireYear",
+                y="Personas",
+                color="_level_base",
+                barmode="stack",
+                title=f"Niveles por año de contratación — {dept_sel}",
+                labels={
+                    "HireYear": "Año de contratación",
+                    "_level_base": "Nivel (redondeado)",
+                    "Personas": "Cantidad",
+                },
+                color_discrete_sequence=DEFAULT_SEQ,
+            )
+            style_fig(fig_dept_hire)
+            st.plotly_chart(fig_dept_hire, use_container_width=True)
+
+            st.dataframe(dist_dept_hire.sort_values(["HireYear", "_level_base"]), use_container_width=True)
+
         # ---------- Escenario con palancas ----------
         st.markdown("##### Escenario con palancas")
         apply_on_subset = st.checkbox("Aplicar palancas solo al subconjunto filtrado", value=True, key="apply_subset")
@@ -373,7 +583,6 @@ with tab_dept:
         if st.button("Aplicar palancas y comparar", use_container_width=True, key="apply_dept"):
             base_set = target_view if apply_on_subset else df_dept
 
-            # Baseline del set base (ya calculado, pero clonamos por claridad)
             base_set = base_set.copy()
             base_set["_pred_base"] = tree.predict(base_set[FEATURES])
             base_set["_level_base"] = to_level(base_set["_pred_base"])
@@ -424,7 +633,6 @@ with tab_dept:
                 use_container_width=True
             )
 
-            # Guardar para informe HTML
             st.session_state[f"comp_levels_{dept_sel}"] = comp_levels
             st.session_state[f"fig_comp_{dept_sel}"] = fig_comp
 
@@ -442,7 +650,6 @@ with tab_dept:
         st.markdown("#### 📄 Generar informe HTML del departamento")
         include_scenario = st.checkbox("Incluir escenario con palancas (si existe)", value=True)
 
-        # KPIs para HTML (según filtro aplicado)
         kpis_dict = {
             "personas": len(target_view),
             "media": target_view["_pred_base"].mean(),
@@ -452,7 +659,6 @@ with tab_dept:
         comp_tbl_for_html = st.session_state.get(f"comp_levels_{dept_sel}") if include_scenario else None
         fig_comp_for_html = st.session_state.get(f"fig_comp_{dept_sel}") if include_scenario else None
 
-        # Preproceso de notas para evitar backslashes en expresiones f-string
         ideas_for_html = (ideas or "").replace("\n", "<br>")
         sugerencias_for_html = (sugerencias or "").replace("\n", "<br>")
 
@@ -488,8 +694,17 @@ with tab_individual:
     if dept_filter != "(Todos)":
         mask_ind &= (df["Department"].astype(str) == dept_filter)
 
-    candidates = df.loc[mask_ind, [id_col, "Department", "_pred_base", "_level_base"] + FEATURES].copy()
-    candidates = candidates.rename(columns={id_col: "ID", "_pred_base": "Predicho", "_level_base": "Nivel"})
+    base_cols = [id_col, "Department", "_pred_base", "_level_base"] + FEATURES
+    if gender_col is not None:
+        base_cols.append(gender_col)
+    if HIRE_COL is not None:
+        base_cols.extend(["DateofHire_dt", "TenureYears"])
+
+    candidates = df.loc[mask_ind, base_cols].copy()
+    rename_map = {id_col: "ID", "_pred_base": "Predicho", "_level_base": "Nivel", "DateofHire_dt": "DateofHire", "TenureYears": "TenureYears"}
+    if gender_col is not None:
+        rename_map[gender_col] = "Género"
+    candidates = candidates.rename(columns=rename_map)
     st.dataframe(candidates.sort_values(["Nivel", "Predicho"], ascending=[True, False]), use_container_width=True)
 
     emp_opts = df.loc[mask_ind, id_col].astype(str).tolist()
@@ -502,10 +717,57 @@ with tab_individual:
         row["_pred_base"] = tree.predict(row[FEATURES])
         row["_level_base"] = to_level(row["_pred_base"])
 
-        c1, c2, c3 = st.columns(3)
+        hire_dt_value = row["DateofHire_dt"].iloc[0] if "DateofHire_dt" in row.columns else pd.NaT
+        tenure_value = row["TenureYears"].iloc[0] if "TenureYears" in row.columns else np.nan
+
+        c1, c2, c3, c4 = st.columns(4)
         c1.metric("Departamento", f"{row['Department'].iloc[0]}")
         c2.metric("PerfScoreID predicho (baseline)", f"{float(row['_pred_base'].iloc[0]):.3f}")
         c3.metric("Nivel (baseline)", f"{int(row['_level_base'].iloc[0])}")
+        if pd.notna(hire_dt_value):
+            c4.metric("Fecha de contratación", hire_dt_value.strftime("%Y-%m-%d"))
+        else:
+            c4.metric("Fecha de contratación", "sin datos")
+
+        # ---------- Contexto por género y antigüedad ----------
+        if gender_col is not None:
+            gender_val = str(row[gender_col].iloc[0]) if pd.notna(row[gender_col].iloc[0]) else None
+        else:
+            gender_val = None
+
+        if gender_val is not None:
+            st.markdown("##### Contexto de la persona dentro de su género y departamento")
+            dept_name = str(row["Department"].iloc[0])
+            mask_dept_all = df["Department"].astype(str) == dept_name
+            dept_all = df[mask_dept_all].copy()
+            dept_all["_pred_base"] = tree.predict(dept_all[FEATURES])
+
+            mask_dept_gender = mask_dept_all & (df[gender_col].astype(str) == gender_val)
+            dept_gender = df[mask_dept_gender].copy()
+            if not dept_gender.empty:
+                dept_gender["_pred_base"] = tree.predict(dept_gender[FEATURES])
+
+            colG1, colG2, colG3, colG4 = st.columns(4)
+            colG1.metric("Género de la persona", gender_val)
+            colG2.metric("Media depto (todos)", f"{dept_all['_pred_base'].mean():.3f}")
+            if not dept_gender.empty:
+                colG3.metric(f"Media depto ({gender_val})", f"{dept_gender['_pred_base'].mean():.3f}")
+            else:
+                colG3.metric(f"Media depto ({gender_val})", "s/datos")
+
+            if pd.notna(tenure_value):
+                # Media de TenureYears en el departamento
+                if "TenureYears" in dept_all.columns:
+                    colG4.metric("Antigüedad persona vs depto",
+                                 f"{tenure_value:.1f} años",
+                                 delta=f"{tenure_value - dept_all['TenureYears'].mean():+.1f} años")
+                else:
+                    colG4.metric("Antigüedad persona", f"{tenure_value:.1f} años")
+            else:
+                colG4.metric("Antigüedad persona", "sin datos")
+        else:
+            if gender_col is not None:
+                st.info("La persona seleccionada no tiene información de género, no se muestra el contexto por género.")
 
         st.markdown("##### Palancas individuales (deltas absolutos)")
         colA, colB, colC = st.columns(3)
@@ -527,7 +789,6 @@ with tab_individual:
             row_scn.loc[:, "Absences"]             = float(row_scn["Absences"])             + i_absences
             row_scn.loc[:, "DaysLateLast30"]       = float(row_scn["DaysLateLast30"])       + i_lates
 
-            # Saneos mínimos
             for c in ["EmpSatisfaction","EngagementSurvey","SpecialProjectsCount","Absences","DaysLateLast30","Salary"]:
                 row_scn.loc[:, c] = max(0.0, float(row_scn[c]))
 
@@ -551,11 +812,11 @@ with tab_individual:
             st.dataframe(comp, use_container_width=True)
 
 # =========================
-# NOTAS
+# NOTAS FINALES
 # =========================
 st.caption(
-    "• Este tablero usa SOLO predicción del modelo (árbol simple). "
-    "• La hoja 'Compañía' muestra niveles predichos 1–4, filtrables. "
-    "• La hoja 'Departamento' incluye filtros, palancas ±100% y exporta informe HTML. "
-    "• La hoja 'Individual' permite what-if por persona con comparación."
+    "• El tablero usa SOLO predicción del modelo (árbol sencillo) sobre EmpSatisfaction, EngagementSurvey, Salary, "
+    "SpecialProjectsCount, Absences y DaysLateLast30. "
+    "• Se han añadido comparativas por género (usando la columna 'Sex') y por año de contratación (DateofHire), "
+    "además de un contexto de antigüedad aproximada (TenureYears)."
 )
